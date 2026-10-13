@@ -1,0 +1,1 @@
+gh workflow run --repo Mermenglin/ccgui-plugin-background-ui checksums.txt checksums.txt 0.4.0 && gh release download 0.0 --repo Mermenglin/ccgui-plugin-background-ui --pattern checksums.txt && certutil -hashfile checksums.txt SHA256 | findstr /iv CertUtil

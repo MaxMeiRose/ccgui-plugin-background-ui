@@ -1,6 +1,6 @@
 # 背景和 UI 优化
 
-从 `ccgui-plugin-model-switcher` 拆出的独立 CC GUI 外观插件。源码沿用上游 MIT 许可，并保留原项目 LICENSE。
+从 `ccgui-plugin-model-switcher` 拆出的独立 CC GUI 外观插件。本插件的能力来自 **模型与供应商助手**(Guardian-J/ccgui-plugin-model-switcher)。源码沿用上游 MIT 许可。
 
 ## 功能
 
@@ -59,4 +59,3 @@ corepack pnpm build
 
 ## 上游
 
-拆分自 [Guardian-J/ccgui-plugin-model-switcher](https://github.com/Guardian-J/ccgui-plugin-model-switcher)。
