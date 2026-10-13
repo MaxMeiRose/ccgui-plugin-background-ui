@@ -1,0 +1,18 @@
+<!doctype html><meta charset="utf-8"><pre id="result">Running...</pre>
+<script>
+  const result = document.querySelector("#result");
+  try {
+    const payload = "A".repeat(Math.ceil(5 * 1024 * 1024 / 3) * 4);
+    const data = `data:image/png;base64,${payload}`;
+    const style = document.createElement("style");
+    style.textContent = `:root { --large-image: url("${data}"); }`;
+    document.head.appendChild(style);
+    const rule = style.sheet?.cssRules?.[0];
+    const value = rule?.style?.getPropertyValue("--large-image") || "";
+    result.textContent = `PASS: source=${style.textContent.length} value=${value.length}`;
+    document.title = "PASS";
+  } catch (error) {
+    result.textContent = error?.stack || String(error);
+    document.title = "FAIL";
+  }
+</script>

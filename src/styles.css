@@ -1,0 +1,11 @@
+.ccgui-background-ui-root {
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .ccgui-background-ui-root {
+    border-inline: 0 !important;
+    border-radius: 0 !important;
+  }
+}

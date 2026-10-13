@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>JPEG import regression</title>
+<pre id="result">Running…</pre>
+<script type="module">
+  import { readBackgroundFile } from "../src/theme-customization.ts";
+  import { GuiThemeManager } from "../src/theme-manager.ts";
+
+  const result = document.querySelector("#result");
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1024;
+    canvas.height = 768;
+    const context = canvas.getContext("2d");
+    const pixels = context.createImageData(canvas.width, canvas.height);
+    let random = 123456;
+    for (let index = 0; index < pixels.data.length; index += 4) {
+      random = (Math.imul(random, 1664525) + 1013904223) >>> 0;
+      pixels.data[index] = random & 255;
+      pixels.data[index + 1] = (random >>> 8) & 255;
+      pixels.data[index + 2] = (random >>> 16) & 255;
+      pixels.data[index + 3] = 255;
+    }
+    context.putImageData(pixels, 0, 0);
+    const encoded = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.95));
+    if (!encoded || encoded.type !== "image/jpeg") throw new Error("JPEG encoder unavailable");
+    const source = new Uint8Array(await encoded.arrayBuffer());
+    if (source[0] !== 255 || source[1] !== 216) throw new Error("JPEG SOI missing");
+    const target = 4 * 1024 * 1024;
+    let remaining = target - source.length;
+    const comments = [];
+    while (remaining > 0) {
+      let size = Math.min(remaining, 65537);
+      if (remaining > size && remaining - size < 4) size -= 4;
+      if (size < 4) throw new Error("Invalid JPEG fixture padding");
+      const comment = new Uint8Array(size);
+      comment.set([255, 254, (size - 2) >>> 8, (size - 2) & 255]);
+      for (let index = 4; index < size; index++) {
+        random = (Math.imul(random, 1664525) + 1013904223) >>> 0;
+        comment[index] = random >>> 24;
+      }
+      comments.push(comment);
+      remaining -= size;
+    }
+    const blob = new Blob([source.slice(0, 2), ...comments, source.slice(2)], { type: "image/jpeg" });
+    if (blob.size !== target) throw new Error(`Expected 4 MiB JPEG, got ${blob.size}`);
+    result.textContent = "Reading a decodable 4 MiB JPEG…";
+    const data = await readBackgroundFile(new File([blob], "four-megabytes.jpg", { type: "image/jpeg" }));
+    if (!data.startsWith("data:image/jpeg;base64,")) throw new Error("JPEG MIME not preserved");
+    const raw = atob(data.split(",")[1]);
+    const original = new Uint8Array(await blob.arrayBuffer());
+    if (raw.length !== original.length) throw new Error("JPEG bytes truncated");
+    for (let index = 0; index < original.length; index++) {
+      if (raw.charCodeAt(index) !== original[index]) throw new Error(`JPEG byte mismatch at ${index}`);
+    }
+    const stored = new Map();
+    const styles = new Set();
+    const mock = {
+      storage: {
+        get: async key => stored.get(key) ?? null,
+        set: async (key, value) => { stored.set(key, structuredClone(value)); },
+        delete: async key => { stored.delete(key); },
+      },
+      theme: { injectCss: css => { styles.add(css); return () => styles.delete(css); } },
+    };
+    let manager = new GuiThemeManager(mock);
+    result.textContent = "Persisting and applying a 4 MiB JPEG…";
+    await manager.updateConfig({ backgroundImage: data, backgroundName: "four-megabytes.jpg", backgroundEnabled: true });
+    if (stored.get("theme_background") !== data) throw new Error("Current JPEG not persisted");
+    if (manager.getBackgroundHistory().length !== 1) throw new Error("JPEG not added to history");
+    const id = manager.getBackgroundHistory()[0].id;
+    if (stored.get(`background_history_image_${id}`) !== data) throw new Error("JPEG history not persisted");
+    if (![...styles].some(css => css.includes('--ms-background-image: url("data:image/jpeg;base64,'))) throw new Error("JPEG background CSS missing");
+    manager.dispose();
+    manager = new GuiThemeManager(mock);
+    await manager.init();
+    if (manager.getConfig().backgroundImage !== data || manager.getBackgroundHistory().length !== 1) throw new Error("JPEG lost after restart");
+    await manager.updateConfig({ backgroundImage: "", backgroundName: "", backgroundEnabled: false });
+    await manager.selectBackground(id);
+    if (manager.getConfig().backgroundImage !== data) throw new Error("JPEG history switching failed");
+    manager.dispose();
+    result.textContent = "PASS: decodable 4 MiB JPEG; exact bytes, import, history, persistence, background CSS, restart and switching";
+    document.title = "PASS";
+  } catch (error) {
+    result.textContent = error?.stack || String(error);
+    document.title = "FAIL";
+  }
+</script>
+</html>

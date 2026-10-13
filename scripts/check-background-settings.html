@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Background settings regression</title>
+<style>
+  body { margin: 0; padding: 24px; background: #eef1f4; }
+  #root { max-width: 720px; margin: 0 auto; }
+  #result { max-width: 720px; margin: 12px auto 0; font: 13px/1.5 system-ui; }
+</style>
+<div id="root"></div>
+<pre id="result">Running…</pre>
+<script type="module">
+  import React from "react";
+  import { createRoot } from "react-dom/client";
+  import { initReact } from "../src/react-context.ts";
+  import { GuiThemeManager } from "../src/theme-manager.ts";
+  import { ThemeCustomizationPanel } from "../src/components/ThemeCustomizationPanel.tsx";
+  import { settingsPanelStyles } from "../src/components/settings-panel-styles.ts";
+
+  initReact(React);
+  const canvas = document.createElement("canvas");
+  canvas.width = 320;
+  canvas.height = 180;
+  const drawing = canvas.getContext("2d");
+  drawing.fillStyle = "#157a6e";
+  drawing.fillRect(0, 0, canvas.width, canvas.height);
+  const image = canvas.toDataURL("image/png");
+  const stored = new Map([
+    ["theme_config", { preset: "graphite", backgroundEnabled: true, backgroundName: "已保存壁纸.png" }],
+    ["theme_background", image],
+    ["wallpaper_provider", "upx8"],
+  ]);
+  const mountedCss = new Set();
+  let networkRequests = 0;
+  const contextMock = {
+    assets: { remoteUrl: () => png },
+    bridge: { invoke: async () => { networkRequests++; throw new Error("Unexpected network request"); } },
+    storage: {
+      get: async key => stored.get(key) ?? null,
+      set: async (key, value) => { stored.set(key, value); },
+      delete: async key => { stored.delete(key); },
+    },
+    theme: { injectCss: css => { mountedCss.add(css); return () => mountedCss.delete(css); } },
+  };
+  let manager = new GuiThemeManager(contextMock);
+  await manager.init();
+
+  function Harness() {
+    const [config, setConfig] = React.useState(manager.getConfig());
+    React.useEffect(() => manager.subscribe(setConfig), []);
+    return React.createElement("div", { className: "ccgui-background-ui-root" },
+      React.createElement("style", null, settingsPanelStyles),
+      React.createElement("div", { className: "ms-theme" },
+        React.createElement(ThemeCustomizationPanel, {
+          section: "background", config, manager, update: partial => manager.updateConfig(partial),
+        })));
+  }
+  let root = createRoot(document.querySelector("#root"));
+  root.render(React.createElement(Harness));
+
+  const waitFor = async (predicate, message) => {
+    const deadline = Date.now() + 10000;
+    while (!predicate()) {
+      if (Date.now() > deadline) throw new Error(`Timed out: ${message}`);
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  };
+  const button = text => [...document.querySelectorAll("button")].find(element => element.textContent === text);
+  try {
+    await waitFor(() => document.querySelector(".ms-image-preview img"), "saved wallpaper preview");
+    if (document.querySelector(".ms-image-preview img").src !== image) throw new Error("Saved wallpaper was not restored");
+    if (manager.getBackgroundHistory().length !== 1) throw new Error("Legacy background was not migrated to history");
+    if (/商店|商城/.test(document.querySelector("#root").textContent)) throw new Error("Wallpaper shop still visible");
+    if (!document.querySelector('[aria-label="图片来源"]')) throw new Error("Wallpaper source tabs missing");
+    const online = [...document.querySelectorAll("button")].find(element => element.textContent === "在线图库");
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jgbkAAAAASUVORK5CYII=";
+    const imageBytes = Uint8Array.from(atob(png.slice(png.indexOf(",") + 1)), char => char.charCodeAt(0));
+    const wallpaper = { url: "http://cdn-hsyq-static.shanhutech.cn/bizhi/staticwp/photo.jpg", title: "", source: "birdpaper", width: 0, height: 0, resolution: "1920x1080" };
+    const b64 = bytes => btoa(String.fromCharCode(...bytes));
+    contextMock.bridge.invoke = async (command, args) => {
+      if (command === "plugin_exec_run") {
+        const script = String(args.args?.[1] ?? "");
+        // Small images return inline: "size\nbase64" format (no temp file)
+        return { code: 0, stdout: `${imageBytes.length}\n${b64(imageBytes)}`, stderr: "" };
+      }
+      networkRequests++;
+      if (String(args.url).includes("api.php")) return { status: 200, body: JSON.stringify({ code: 200, message: "success", data: wallpaper, count: 1 }) };
+      throw new Error("Unexpected network request");
+    };
+    online.click();
+    await waitFor(() => document.querySelector('[aria-label="壁纸分类"]'), "online gallery");
+    const onlineRequests = networkRequests;
+    if (onlineRequests === 0) throw new Error("Opening the online gallery did not auto-search");
+    await waitFor(() => document.querySelector(".ms-history-thumbnail img"), "thumbnails auto-load after opening the gallery");
+    await waitFor(() => /^1920 × 1080 · /.test(document.querySelector(".ms-history-use small")?.textContent || ""), "thumbnail size is shown instead of 尺寸未知");
+    if (/尺寸/.test(document.querySelector(".ms-history-use small").textContent)) throw new Error("Unknown size text still visible after the thumbnail loaded");
+    const beforePreview = manager.getBackgroundHistory().length;
+    document.querySelector('[aria-label="预览壁纸 壁纸 1"]').click();
+    await waitFor(() => document.querySelector(".ms-gallery-preview img"), "gallery preview");
+    if (manager.getBackgroundHistory().length !== beforePreview) throw new Error("Preview wrote history");
+    if (manager.getConfig().backgroundName === "壁纸 1") throw new Error("Preview changed the active background");
+    [...document.querySelectorAll("button")].find(element => element.textContent === "仅保存到历史").click();
+    await waitFor(() => manager.getBackgroundHistory().some(item => item.name === "壁纸 1" && item.source?.provider === "wallpaper-api-v2"), "save online wallpaper");
+    [...document.querySelectorAll('[role="tab"]')].find(element => element.textContent === "历史记录").click();
+    await waitFor(() => document.querySelector('[aria-label="使用壁纸 壁纸 1"]'), "online item in history");
+    if (document.querySelector(".ms-background-shop, .ms-shop-toggle")) throw new Error("Shop controls still present");
+    button("纯色").click();
+    await waitFor(() => button("纯色").getAttribute("aria-pressed") === "true", "disable wallpaper");
+    if (stored.get("theme_background") !== image) throw new Error("Disabling wallpaper removed saved data");
+    button("图片").click();
+    await waitFor(() => button("图片").getAttribute("aria-pressed") === "true", "restore wallpaper");
+    button("完整显示").click();
+    await waitFor(() => document.querySelector(".ms-image-preview img").style.objectFit === "contain", "wallpaper fit");
+    document.querySelector('[aria-label="移除背景图片"]').click();
+    await waitFor(() => !document.querySelector(".ms-image-preview") && stored.get("theme_background") === null, "remove wallpaper");
+    if (manager.getBackgroundHistory().length !== 2) throw new Error("Stopping the background removed its history");
+    drawing.fillStyle = "#2a6fdb";
+    drawing.fillRect(0, 0, canvas.width, canvas.height);
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+    const files = new DataTransfer();
+    files.items.add(new File([blob], "本地壁纸.png", { type: "image/png" }));
+    const input = document.querySelector('input[type="file"]');
+    input.files = files.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFor(() => document.querySelector(".ms-image-name")?.textContent === "本地壁纸.png" &&
+      stored.get("theme_background")?.startsWith("data:image/png;base64,"), "local wallpaper import");
+    if (!manager.getConfig().backgroundEnabled) throw new Error("Imported wallpaper was not enabled");
+    await waitFor(() => document.querySelectorAll(".ms-history-use").length === 3, "three saved wallpapers");
+    const legacyId = manager.getBackgroundHistory().find(item => item.name === "已保存壁纸.png").id;
+    document.querySelector('[aria-label="使用壁纸 已保存壁纸.png"]').click();
+    await waitFor(() => manager.getConfig().backgroundImage === image &&
+      document.querySelector('[aria-label="使用壁纸 已保存壁纸.png"]').getAttribute("aria-pressed") === "true", "switch from history");
+    root.unmount();
+    manager.dispose();
+    manager = new GuiThemeManager(contextMock);
+    await manager.init();
+    if (manager.getBackgroundHistory().length !== 3 || manager.getConfig().backgroundImage !== image) throw new Error("Wallpaper history did not survive restart");
+    root = createRoot(document.querySelector("#root"));
+    root.render(React.createElement(Harness));
+    await waitFor(() => document.querySelectorAll(".ms-history-use").length === 3, "history after restart");
+    document.querySelector('[aria-label="从历史删除 已保存壁纸.png"]').click();
+    await waitFor(() => button("确认删除"), "delete confirmation");
+    button("确认删除").click();
+    await waitFor(() => document.querySelectorAll(".ms-history-use").length === 2 && !manager.getConfig().backgroundEnabled, "delete active wallpaper");
+    if (stored.has(`background_history_image_${legacyId}`)) throw new Error("Deleted wallpaper data was not released");
+    if (networkRequests !== onlineRequests) throw new Error(`Unexpected network requests: ${networkRequests} (baseline ${onlineRequests})`);
+    await waitFor(() => !document.querySelector(".ms-image-preview") && !manager.getConfig().backgroundEnabled, "deleting the active wallpaper keeps the background disabled instead of guessing a replacement");
+    document.querySelector('[aria-label="使用壁纸 本地壁纸.png"]').click();
+    await waitFor(() => document.querySelector(".ms-image-name")?.textContent === "本地壁纸.png" && manager.getConfig().backgroundEnabled, "switch to remaining wallpaper");
+    root.unmount();
+    manager.dispose();
+    if (mountedCss.size !== 0) throw new Error("Theme CSS was not disposed");
+    document.querySelector("#result").textContent = "PASS: migration, local import, history switching, restart, confirmed deletion, original bytes, online preview/save and cleanup";
+    document.title = "PASS";
+  } catch (error) {
+    document.querySelector("#result").textContent = error.stack;
+    document.title = "FAIL";
+  }
+</script>
+</html>

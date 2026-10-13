@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>Background import regression</title>
+<pre id="result">Running...</pre>
+<script type="module">
+  import { readBackgroundFile } from "../src/theme-customization.ts";
+  import { GuiThemeManager } from "../src/theme-manager.ts";
+
+  const result = document.querySelector("#result");
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = 32;
+    canvas.height = 24;
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#157a6e";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = "#ffd166";
+    context.fillRect(8, 6, 16, 12);
+
+    result.textContent = "Encoding WebP fixture...";
+    document.title = "ENCODING";
+    const encoded = await new Promise(resolve => canvas.toBlob(resolve, "image/webp", 0.9));
+    if (!encoded || encoded.type !== "image/webp") throw new Error("Chromium WebP encoder unavailable");
+    const source = new Uint8Array(await encoded.arrayBuffer());
+    const targetBytes = 5 * 1024 * 1024;
+    const payloadBytes = targetBytes - source.length - 8;
+    if (payloadBytes <= 0) throw new Error("WebP fixture source is unexpectedly large");
+    const blobBytes = new Uint8Array(source.length + 8 + payloadBytes + (payloadBytes & 1));
+    blobBytes.set(source);
+    blobBytes.set([0x4a, 0x55, 0x4e, 0x4b], source.length); // RIFF JUNK chunk
+    const view = new DataView(blobBytes.buffer);
+    view.setUint32(source.length + 4, payloadBytes, true);
+    view.setUint32(4, blobBytes.length - 8, true);
+    const blob = new Blob([blobBytes], { type: "image/webp" });
+    if (blob.size <= 4 * 1024 * 1024) throw new Error(`WebP fixture is not larger than 4 MB: ${blob.size}`);
+    if (blob.size > 12 * 1024 * 1024) throw new Error(`WebP fixture exceeds the import limit: ${blob.size}`);
+    result.textContent = `Importing WebP fixture (${blob.size} bytes)...`;
+    document.title = "IMPORTING";
+    const file = new File([blob], "background.webp", { type: "image/webp" });
+    const data = await readBackgroundFile(file);
+    if (!data.startsWith("data:image/webp;base64,")) throw new Error("WebP data URL was not preserved");
+
+    const stored = new Map();
+    const mountedCss = new Set();
+    const contextMock = {
+      storage: {
+        get: async key => stored.get(key) ?? null,
+        set: async (key, value) => { stored.set(key, value); },
+        delete: async key => { stored.delete(key); },
+      },
+      theme: {
+        injectCss: css => {
+          mountedCss.add(css);
+          return () => mountedCss.delete(css);
+        },
+      },
+    };
+    const manager = new GuiThemeManager(contextMock);
+    result.textContent = `Applying WebP fixture (${blob.size} bytes)...`;
+    document.title = "APPLYING";
+    await manager.updateConfig({
+      backgroundEnabled: true,
+      backgroundImage: data,
+      backgroundName: file.name,
+    });
+    if (stored.get("theme_background") !== data) throw new Error("Large WebP was not persisted");
+    const css = [...mountedCss].join("\n");
+    if (!css.includes("--ms-background-image: url(\"data:image/webp;base64,")) {
+      throw new Error("Large WebP was not injected into background CSS");
+    }
+    if (!css.includes("var(--ms-background-image, none)")) throw new Error("Background surface CSS missing");
+    if (/prefers-reduced-motion[\s\S]*background-image:\s*none/.test(css)) {
+      throw new Error("Static WebP is hidden by reduced-motion CSS");
+    }
+
+    result.textContent = `PASS: WebP ${blob.size} bytes imported, persisted and displayed`;
+    document.title = "PASS";
+  } catch (error) {
+    result.textContent = error?.stack || String(error);
+    document.title = "FAIL";
+  }
+</script>
+</html>

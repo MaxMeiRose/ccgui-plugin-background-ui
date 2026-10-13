@@ -1,0 +1,26 @@
+{
+  "name": "ccgui-plugin-background-ui",
+  "version": "0.4.0",
+  "private": true,
+  "description": "CC GUI 背景、主题与界面细节优化插件",
+  "type": "module",
+  "packageManager": "pnpm@10.15.1",
+  "scripts": {
+    "validate": "node scripts/validate-manifest.mjs && node --experimental-strip-types scripts/check-background-import.mjs && node --experimental-strip-types scripts/check-background-history.mjs && tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "dev": "vite build --watch"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.7.3",
+    "vite": "^6.2.0"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}
