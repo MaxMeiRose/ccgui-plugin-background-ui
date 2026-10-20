@@ -55,7 +55,8 @@ corepack pnpm build
 
 ## 发布
 
-源码仓库路径预设为 `Mermenglin/ccgui-plugin-background-ui`。创建仓库并推送源码后，打与 manifest 版本完全一致且不带 `v` 的 tag；例如当前版本使用 `0.1.2`。GitHub Actions 会构建并发布三件套与 `checksums.txt`。
+源码仓库路径为 `MaxMeiRose/ccgui-plugin-background-ui`。创建仓库并推送源码后，打与 manifest 版本完全一致且不带 `v` 的 tag；例如当前版本使用 `0.0.2`。GitHub Actions 会构建并发布三件套与 `checksums.txt`。
 
 ## 上游
 
+拆分自 [Guardian-J/ccgui-plugin-model-switcher](https://github.com/Guardian-J/ccgui-plugin-model-switcher)，沿用其 MIT 许可。原始版权声明见 `LICENSE`。
