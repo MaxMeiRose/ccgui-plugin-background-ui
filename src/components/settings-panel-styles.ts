@@ -44,9 +44,6 @@ export const settingsPanelStyles = `
 .ccgui-background-ui-root .ms-status { margin-bottom: 12px; padding: 8px 10px; border: 1px solid var(--ms-border); border-radius: 6px; background: var(--ms-tint); color: var(--ms-text); font-size: 12px; overflow-wrap: anywhere; }
 .ccgui-background-ui-root .ms-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--ms-muted); }
 .ccgui-background-ui-root .ms-icon-button:hover:not(:disabled) { background: var(--ms-hover); color: var(--ms-text); }
-.ccgui-background-ui-root .ms-theme-modes { display: flex; gap: 3px; padding: 3px; border: 1px solid var(--ms-border); border-radius: 6px; background: var(--ms-surface); }
-.ccgui-background-ui-root .ms-theme-modes button { flex: 1; min-width: 0; min-height: 30px; border: 0; border-radius: 4px; background: transparent; color: var(--ms-muted); font-size: 12px; }
-.ccgui-background-ui-root .ms-theme-modes button[aria-pressed="true"] { background: var(--ms-bg); color: var(--ms-text); box-shadow: 0 1px 3px #00000016; }
 .ccgui-background-ui-root .ms-palette-mode { margin-bottom: 14px; }
 .ccgui-background-ui-root .ms-theme-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .ccgui-background-ui-root .ms-theme-preset { display: flex; min-width: 0; flex-direction: column; padding: 5px; border: 1px solid var(--ms-border); border-radius: 6px; background: var(--ms-bg); text-align: left; }
@@ -105,10 +102,15 @@ export const settingsPanelStyles = `
 .ccgui-background-ui-root .ms-history-delete svg { width: 12px; height: 12px; }
 .ccgui-background-ui-root .ms-history-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 7px; border-top: 1px solid var(--ms-border); font-size: 10px; }
 .ccgui-background-ui-root .ms-history-confirm button { padding: 3px 5px; border: 1px solid var(--ms-border); border-radius: 4px; background: transparent; color: var(--ms-text); font-size: 10px; }
-.ccgui-background-ui-root .ms-source-tabs { display: flex; gap: 3px; margin-bottom: 12px; padding: 3px; border: 1px solid var(--ms-border); border-radius: 6px; background: var(--ms-surface); }
-.ccgui-background-ui-root .ms-source-tabs button { flex: 1; min-width: 0; min-height: 30px; border: 0; border-radius: 4px; background: transparent; color: var(--ms-muted); font-size: 12px; }
-.ccgui-background-ui-root .ms-source-tabs button[aria-selected="true"] { background: var(--ms-bg); color: var(--ms-text); box-shadow: 0 1px 3px #00000016; }
-.ccgui-background-ui-root .ms-gallery-filters { display: grid; grid-template-columns: 1fr 1.4fr .9fr auto; gap: 8px; align-items: end; }
+.ccgui-background-ui-root .ms-source-tabs { display: flex; gap: 4px; margin-bottom: 12px; padding: 4px; border: 1px solid var(--ms-border); border-radius: 8px; background: var(--ms-surface); }
+.ccgui-background-ui-root .ms-source-tabs button { position: relative; flex: 1; min-width: 0; min-height: 32px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--ms-muted); font-size: 12px; font-weight: 500; transition: color .12s ease, background-color .12s ease, border-color .12s ease, box-shadow .12s ease; }
+.ccgui-background-ui-root .ms-source-tabs button:hover:not(:disabled):not([aria-selected="true"]) { background: var(--ms-hover); color: var(--ms-text); }
+.ccgui-background-ui-root .ms-source-tabs button[aria-selected="true"] { background: var(--ms-bg); border: 2px solid var(--ms-accent); color: var(--ms-accent); font-weight: 700; box-shadow: 0 1px 2px #00000012, 0 4px 14px #00000022; }
+
+.ccgui-background-ui-root .ms-theme-modes { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--ms-border); border-radius: 8px; background: var(--ms-surface); }
+.ccgui-background-ui-root .ms-theme-modes button { flex: 1; min-width: 0; min-height: 32px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--ms-muted); font-size: 12px; font-weight: 500; transition: color .12s ease, background-color .12s ease, border-color .12s ease, box-shadow .12s ease; }
+.ccgui-background-ui-root .ms-theme-modes button:hover:not(:disabled):not([aria-pressed="true"]) { background: var(--ms-hover); color: var(--ms-text); }
+.ccgui-background-ui-root .ms-theme-modes button[aria-pressed="true"] { background: var(--ms-bg); border: 2px solid var(--ms-accent); color: var(--ms-accent); font-weight: 700; box-shadow: 0 1px 2px #00000012, 0 4px 14px #00000022; }
 .ccgui-background-ui-root .ms-gallery-filters label { display: flex; min-width: 0; flex-direction: column; gap: 4px; color: var(--ms-muted); font-size: 11px; }
 .ccgui-background-ui-root .ms-gallery-filters select,
 .ccgui-background-ui-root .ms-gallery-filters input { width: 100%; min-width: 0; min-height: 32px; padding: 4px 8px; border: 1px solid var(--ms-border); border-radius: 6px; background: var(--ms-bg); color: var(--ms-text); }
