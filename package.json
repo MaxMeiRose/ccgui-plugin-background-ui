@@ -1,6 +1,6 @@
 {
   "name": "ccgui-plugin-background-ui",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "CC GUI 背景、主题与界面细节优化插件,从模型与供应商助手提取",
   "type": "module",
