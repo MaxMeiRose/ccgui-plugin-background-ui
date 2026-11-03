@@ -1,5 +1,5 @@
 import type { PluginContext } from "./ccgui-plugin";
-import { isBackgroundImage, MAX_BACKGROUND_BYTES } from "./background-import-core.ts";
+import { isBackgroundImage, MAX_BACKGROUND_BYTES, BACKGROUND_SIZE_LIMIT_MESSAGE } from "./background-import-core.ts";
 
 export const MAX_BACKGROUND_HISTORY_ITEMS = 20;
 export const MAX_BACKGROUND_HISTORY_BYTES = 120 * 1024 * 1024;
@@ -112,7 +112,7 @@ export class BackgroundHistory {
       if (!isBackgroundImage(image)) throw new Error("壁纸图片无效");
       if (source !== undefined && !isImageSource(source)) throw new Error("壁纸来源信息无效");
       const size = backgroundImageBytes(image);
-      if (!Number.isInteger(size) || size <= 0 || size > MAX_BACKGROUND_BYTES) throw new Error("图片不能超过 12 MB");
+      if (!Number.isInteger(size) || size <= 0 || size > MAX_BACKGROUND_BYTES) throw new Error(BACKGROUND_SIZE_LIMIT_MESSAGE);
       const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(image));
       const id = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
       const existing = this.items.find(item => item.id === id);

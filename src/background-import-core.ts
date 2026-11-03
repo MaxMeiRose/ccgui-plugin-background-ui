@@ -1,4 +1,5 @@
-export const MAX_BACKGROUND_BYTES = 12 * 1024 * 1024;
+export const MAX_BACKGROUND_BYTES = 32 * 1024 * 1024;
+export const BACKGROUND_SIZE_LIMIT_MESSAGE = `图片不能超过 ${MAX_BACKGROUND_BYTES / (1024 * 1024)} MiB`;
 
 export function isBackgroundImage(value: unknown): value is string {
   return typeof value === "string" && value.length <= Math.ceil(MAX_BACKGROUND_BYTES / 3) * 4 + 64 &&

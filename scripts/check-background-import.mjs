@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 
 import {
-  MAX_BACKGROUND_BYTES,
   detectBackgroundMime,
   isBackgroundImage,
   shouldSuppressBackgroundMotion,
@@ -13,9 +12,12 @@ const webpHeader = Uint8Array.from([
 ]);
 assert.equal(detectBackgroundMime(webpHeader), "image/webp");
 
-assert.equal(MAX_BACKGROUND_BYTES, 12 * 1024 * 1024);
 const fiveMegabyteWebp = `data:image/webp;base64,${"A".repeat(Math.ceil(5 * 1024 * 1024 / 3) * 4)}`;
 assert.equal(isBackgroundImage(fiveMegabyteWebp), true);
+const largeWebp = `data:image/webp;base64,${Buffer.alloc(32 * 1024 * 1024).toString("base64")}`;
+assert.equal(isBackgroundImage(largeWebp), true, "32 MiB originals must remain valid after loading from storage");
+const oversizedWebp = `data:image/webp;base64,${Buffer.alloc(33 * 1024 * 1024).toString("base64")}`;
+assert.equal(isBackgroundImage(oversizedWebp), false);
 
 assert.equal(shouldSuppressBackgroundMotion("data:image/webp;base64,UklGRg=="), false);
 assert.equal(shouldSuppressBackgroundMotion("data:image/gif;base64,R0lGODlh"), true);

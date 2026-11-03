@@ -1,11 +1,11 @@
 {
   "id": "background-ui",
   "name": "背景和 UI 优化",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "minAppVersion": "1.0.0",
   "sdkVersion": "^0.3.1",
   "author": "Mermenglin",
-  "repo": "Mermenglin/ccgui-plugin-background-ui",
+  "repo": "MaxMeiRose/ccgui-plugin-background-ui",
   "description": "为 CC GUI 提供应用背景、主题配色、幕布、时间线、页签、聚焦光晕、滚动条、代码块与字体优化。",
   "tier": "js",
   "license": "MIT",

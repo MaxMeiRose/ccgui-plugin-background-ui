@@ -2,6 +2,7 @@ import type { PluginContext } from "./ccgui-plugin";
 import type { OnlineWallpaper, WallpaperQuery } from "./wallpaper-api.ts";
 import { isAuthorizedImageUrl } from "./wallpaper-api.ts";
 import type { WallpaperOption, WallpaperPage, WallpaperProvider } from "./wallpaper-provider";
+import { WallpaperSearchError, wallpaperNetworkError, isRetryableWallpaperStatus, retryWallpaperSearch, type WallpaperSearchOptions } from "./wallpaper-network.ts";
 
 const WALLHAVEN_API_URL = "https://wallhaven.cc/api/v1/search";
 const PAGE_SIZE = 24;
@@ -110,6 +111,7 @@ export class WallhavenProvider implements WallpaperProvider {
   readonly defaultQuery: WallpaperQuery = { category: "", keyword: "", resolution: this.screenOption?.value ?? "any", sort: "date_added" };
   private readonly bridge: PluginContext["bridge"];
   private disposed = false;
+  private readonly searchLifetime = new AbortController();
 
   constructor(bridge: PluginContext["bridge"]) { this.bridge = bridge; }
 
@@ -124,19 +126,24 @@ export class WallhavenProvider implements WallpaperProvider {
       response = await this.bridge.invoke<unknown>("plugin_http_request", { method: "GET", url });
     } catch (error) {
       this.assertActive();
-      throw error;
+      throw wallpaperNetworkError(error, "Wallhaven ");
     }
     this.assertActive();
     const result = response !== null && typeof response === "object" && !Array.isArray(response) ? response as Record<string, unknown> : null;
     if (!result || typeof result.status !== "number" || !Number.isInteger(result.status)) throw new Error("Wallhaven 响应格式无效");
     const body = typeof result.body === "string" ? result.body : "";
     if (result.status === 429) throw new Error("Wallhaven 请求过于频繁（每分钟 45 次），请稍后再试");
-    if (result.status !== 200) throw new Error(`Wallhaven 请求失败（HTTP ${result.status}）：${body.slice(0, 120)}`);
+    if (result.status !== 200) throw new WallpaperSearchError(`Wallhaven 请求失败（HTTP ${result.status}）：${body.slice(0, 120)}`, isRetryableWallpaperStatus(result.status));
     if (typeof result.body !== "string") throw new Error("Wallhaven 响应格式无效");
     return result.body;
   }
 
-  async search(query: WallpaperQuery, page: number): Promise<WallpaperPage> {
+  async search(query: WallpaperQuery, page: number, options: WallpaperSearchOptions = {}): Promise<WallpaperPage> {
+    const signal = options.signal ? AbortSignal.any([options.signal, this.searchLifetime.signal]) : this.searchLifetime.signal;
+    return retryWallpaperSearch(() => this.searchOnce(query, page), { ...options, signal });
+  }
+
+  private async searchOnce(query: WallpaperQuery, page: number): Promise<WallpaperPage> {
     this.assertActive();
     if (!positiveInteger(page)) throw new Error("Wallhaven 页码无效");
     const category = WALLHAVEN_CATEGORIES.some(item => item.value === query.category) ? query.category : "";
@@ -175,5 +182,8 @@ export class WallhavenProvider implements WallpaperProvider {
     };
   }
 
-  dispose(): void { this.disposed = true; }
+  dispose(): void {
+    this.disposed = true;
+    this.searchLifetime.abort(new Error("在线图库已关闭，请重新打开后重试"));
+  }
 }

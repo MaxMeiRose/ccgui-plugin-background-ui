@@ -138,6 +138,23 @@ assert.equal(onlineReload.getItems()[0].source.provider, "wallpaper-api-v2");
 assert.equal((await onlineReload.read(online.id)).image, firstImage);
 const local = await onlineReload.remember(picture("another local picture"), "本地.png");
 assert.equal(local.source, undefined, "legacy/local entries need no source metadata");
+
+// A large preview must survive explicit save and reload, beyond the old 12 MiB limit.
+const largeStore = new Map();
+const largeStorage = {
+  get: async key => largeStore.get(key) ?? null,
+  set: async (key, value) => { largeStore.set(key, structuredClone(value)); },
+  delete: async key => { largeStore.delete(key); },
+};
+const largeHistory = new BackgroundHistory(largeStorage);
+const largeImage = `data:image/png;base64,${Buffer.alloc(13 * 1024 * 1024, 7).toString("base64")}`;
+const large = await largeHistory.remember(largeImage, "高清原图.png");
+assert.equal(large.size, 13 * 1024 * 1024);
+const largeReload = new BackgroundHistory(largeStorage);
+await largeReload.init();
+assert.equal((await largeReload.read(large.id)).image, largeImage);
+const oversizedImage = `data:image/png;base64,${Buffer.alloc(32 * 1024 * 1024 + 1, 7).toString("base64")}`;
+await assert.rejects(largeReload.remember(oversizedImage, "过大原图.png"), /超过 32 MiB/);
 await assert.rejects(onlineReload.remember(picture("unsafe"), "无效来源", {
   provider: "wallpaper-api-v2", url: "javascript:alert(1)",
 }), /来源/);

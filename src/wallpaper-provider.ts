@@ -1,4 +1,5 @@
 import type { OnlineWallpaper, WallpaperQuery } from "./wallpaper-api";
+import type { WallpaperSearchOptions } from "./wallpaper-network.ts";
 
 export type WallpaperProviderId = "wallhaven" | "upx8";
 export type WallpaperOption = { value: string; label: string };
@@ -19,6 +20,6 @@ export interface WallpaperProvider {
   readonly resolutions: readonly WallpaperOption[];
   readonly sorts: readonly WallpaperOption[];
   readonly defaultQuery: WallpaperQuery;
-  search(query: WallpaperQuery, page: number): Promise<WallpaperPage>;
+  search(query: WallpaperQuery, page: number, options?: WallpaperSearchOptions): Promise<WallpaperPage>;
   dispose(): void;
 }

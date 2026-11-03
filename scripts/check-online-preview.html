@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Online original preview regression</title>
+<style>body { margin: 0; padding: 24px; background: #eef1f4; } #root, #result { max-width: 960px; margin: 0 auto; } #result { margin-top: 12px; font: 13px/1.5 system-ui; }</style>
+<div id="root"></div><pre id="result">Running…</pre>
+<script type="module">
+  import React from "react";
+  import { createRoot } from "react-dom/client";
+  import { initReact } from "../src/react-context.ts";
+  import { GuiThemeManager } from "../src/theme-manager.ts";
+  import { OnlineGallery } from "../src/components/OnlineGallery.tsx";
+  import { settingsPanelStyles } from "../src/components/settings-panel-styles.ts";
+  import { backgroundHistoryImageKey } from "../src/background-history.ts";
+  initReact(React);
+  const assert = (condition, message) => { if (!condition) throw new Error(message); };
+  const waitFor = async (predicate, message) => {
+    const deadline = Date.now() + 10000;
+    while (!predicate()) { if (Date.now() > deadline) throw new Error(`Timed out: ${message}`); await new Promise(resolve => setTimeout(resolve, 20)); }
+  };
+  const nativeSetTimeout = window.setTimeout;
+  const nativeClearTimeout = window.clearTimeout;
+  const longTimers = new Map();
+  window.setTimeout = (callback, delay, ...args) => {
+    const id = nativeSetTimeout(() => { longTimers.delete(id); callback(...args); }, delay);
+    if (delay >= 20000) longTimers.set(id, { callback: () => callback(...args), delay });
+    return id;
+  };
+  window.clearTimeout = id => { longTimers.delete(id); nativeClearTimeout(id); };
+  const advanceLongTimers = elapsed => {
+    for (const [id, timer] of [...longTimers]) {
+      if (timer.delay <= elapsed) { window.clearTimeout(id); timer.callback(); }
+    }
+  };
+  const restoreTimers = () => {
+    for (const id of longTimers.keys()) nativeClearTimeout(id);
+    longTimers.clear();
+    window.setTimeout = nativeSetTimeout;
+    window.clearTimeout = nativeClearTimeout;
+  };
+  const picture = (width, height, color) => {
+    const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
+    const drawing = canvas.getContext("2d"); drawing.fillStyle = color; drawing.fillRect(0, 0, width, height);
+    drawing.fillStyle = "#ffffff"; drawing.font = "48px sans-serif"; drawing.fillText(`${width} × ${height}`, 40, 80);
+    return canvas.toDataURL("image/png");
+  };
+  const thumbnail = picture(320, 180, "#829da9");
+  const originalPng = picture(1920, 1080, "#335a74");
+  const largeOriginal = new URLSearchParams(location.search).has("large");
+  const pngBinary = atob(originalPng.split(",")[1]);
+  // PNG decoders stop at IEND; padding keeps the image valid while exercising size limits.
+  const original = largeOriginal
+    ? `data:image/png;base64,${btoa(pngBinary + "\0".repeat(13 * 1024 * 1024 - pngBinary.length))}`
+    : originalPng;
+  const secondOriginal = picture(1280, 720, "#647448");
+  const items = Array.from({ length: 4 }, (_, index) => ({
+    url: `https://w.wallhaven.cc/full/ab/wallhaven-ab123${index}.png`, title: `ab123${index}`, source: "wallhaven",
+    width: index === 1 ? 1280 : 1920, height: index === 1 ? 720 : 1080,
+    thumbnail: `https://th.wallhaven.cc/small/ab/ab123${index}.jpg`,
+  }));
+  const responses = new Map(items.flatMap((item, index) => [[item.url, index === 1 ? secondOriginal : original], [item.thumbnail, thumbnail]]));
+  const downloads = new Map();
+  const temporaryImages = new Map();
+  const stored = new Map();
+  let failOriginal = true;
+  let delaySecond = false;
+  const retrySearch = new URLSearchParams(location.search).has("retry");
+  let searchCalls = 0;
+  let failAllSearches = false;
+  const secondLoad = Promise.withResolvers();
+  const manager = new GuiThemeManager({
+    storage: { get: async key => stored.get(key) ?? null, set: async (key, value) => stored.set(key, value), delete: async key => stored.delete(key) },
+    theme: { injectCss: () => () => {} },
+    bridge: { invoke: async (command, args) => {
+      if (command === "plugin_http_request") {
+        searchCalls++;
+        if (retrySearch && searchCalls === 1) throw "connection timeout";
+        if (failAllSearches || (retrySearch && searchCalls === 2)) return { status: 503, body: "service unavailable" };
+        return { status: 200, body: JSON.stringify({
+          meta: { current_page: 1, last_page: 1, total: 2 },
+          data: items.slice(0, 2).map(item => ({ id: item.title, path: item.url, purity: "sfw", dimension_x: item.width, dimension_y: item.height, thumbs: { small: item.thumbnail } })),
+        }) };
+      }
+      assert(command === "plugin_exec_run", "Unexpected bridge command");
+      const script = String(args.args?.[1]);
+      const token = /"ccgui-wallpaper-[^"]+"/.exec(script)?.[0];
+      if (script.includes("fs.readSync")) {
+        const count = Number(/Buffer\.alloc\((\d+)\)/.exec(script)?.[1]);
+        const offset = Number(/fs\.readSync\(f,b,0,b\.length,(\d+)\)/.exec(script)?.[1]);
+        const binary = temporaryImages.get(token);
+        assert(binary && Number.isSafeInteger(count) && Number.isSafeInteger(offset), "Invalid temporary-image read");
+        const stdout = btoa(binary.slice(offset, offset + count));
+        if (script.includes("fs.rmSync")) temporaryImages.delete(token);
+        return { code: 0, stdout, stderr: "" };
+      }
+      const url = [...responses.keys()].find(candidate => script.includes(candidate));
+      if (!url && script.includes("fs.rmSync")) { temporaryImages.delete(token); return { code: 0, stdout: "", stderr: "" }; }
+      assert(url, "Download did not use a fixture image URL");
+      downloads.set(url, (downloads.get(url) ?? 0) + 1);
+      if (url === items[0].url && failOriginal) { failOriginal = false; return { code: 1, stdout: "", stderr: "模拟原图下载失败" }; }
+      if (url === items[1].url && delaySecond) await secondLoad.promise;
+      const base64 = responses.get(url).split(",")[1];
+      const binary = atob(base64);
+      if (binary.length > 45000) { temporaryImages.set(token, binary); return { code: 0, stdout: `#big ${binary.length}`, stderr: "" }; }
+      return { code: 0, stdout: `${binary.length}\n${base64}`, stderr: "" };
+    } },
+  });
+  await manager.init();
+  function Harness() {
+    const [busy, setBusy] = React.useState(false);
+    return React.createElement("div", { className: "ccgui-background-ui-root" }, React.createElement("style", null, settingsPanelStyles),
+      React.createElement("div", { className: "ms-theme" }, React.createElement(OnlineGallery, { manager, busy, onBusy: setBusy, onApplied: () => {} })));
+  }
+  const root = createRoot(document.querySelector("#root"));
+  root.render(React.createElement(Harness));
+  const open = index => document.querySelectorAll(".ms-history-use")[index].click();
+  const close = () => document.querySelector('[aria-label="关闭预览"]').click();
+  const modalImage = () => document.querySelector(".ms-gallery-preview img");
+  try {
+    if (retrySearch) {
+      await waitFor(() => document.querySelector('[role="status"]')?.textContent.includes("自动重试"), "search retry status");
+      assert(document.querySelector('.ms-gallery-search-button').disabled, "Search button was unlocked during retry");
+    }
+    await waitFor(() => document.querySelectorAll(".ms-history-thumbnail img").length === 2 && [...document.querySelectorAll(".ms-history-thumbnail img")].every(image => image.naturalWidth === 320), "small thumbnails");
+    assert(searchCalls === (retrySearch ? 3 : 1), "Search did not recover with the expected attempt count");
+    assert(!downloads.has(items[0].url) && !downloads.has(items[1].url), "Gallery opening eagerly downloaded originals");
+    open(0);
+    await waitFor(() => document.querySelector(".ms-gallery-preview-loading")?.textContent.includes("模拟原图下载失败"), "original error");
+    assert(!modalImage(), "Failed original was replaced with an enlarged thumbnail");
+    assert(manager.getBackgroundHistory().length === 0, "Preview wrote history");
+    document.querySelector(".ms-gallery-preview-loading button").click();
+    await waitFor(() => modalImage()?.naturalWidth === 1920, "full-resolution retry");
+    assert(document.querySelector(".ms-gallery-preview").matches(":modal"), "Preview is not modal");
+    assert(modalImage().src === original, "Preview did not retain original bytes");
+    assert(document.querySelector(".ms-history-thumbnail img").naturalWidth === 320, "Original replaced the gallery thumbnail");
+    document.querySelector(".ms-gallery-preview .ms-gallery-actions button:nth-child(2)").click();
+    await waitFor(() => manager.getBackgroundHistory().length === 1 && !document.querySelector(".ms-gallery-preview .ms-gallery-actions button").disabled, "explicit save");
+    assert(downloads.get(items[0].url) === 2, "Save downloaded the already-previewed original again");
+    const saved = manager.getBackgroundHistory()[0];
+    assert(stored.get(backgroundHistoryImageKey(saved.id)) === original, "Save used thumbnail bytes");
+    close();
+    await waitFor(() => !document.querySelector(".ms-gallery-preview"), "close first preview");
+    delaySecond = true;
+    open(1);
+    await waitFor(() => downloads.has(items[1].url), "second original pending");
+    advanceLongTimers(90_000);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert(document.querySelector('.ms-gallery-preview-loading')?.textContent.includes("正在加载原图"), "Slow original was cut off by a UI or bridge timeout before 90 seconds");
+    close();
+    await waitFor(() => !document.querySelector(".ms-gallery-preview"), "close pending preview");
+    open(0);
+    await waitFor(() => modalImage()?.naturalWidth === 1920, "cached first original");
+    secondLoad.resolve();
+    await manager.previewOnlineWallpaper(items[1], "original");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert(modalImage()?.naturalWidth === 1920 && modalImage().alt === items[0].title, "Late original changed the newly opened preview");
+    close();
+    await manager.previewOnlineWallpaper(items[2], "original");
+    await manager.previewOnlineWallpaper(items[3], "original");
+    const before = downloads.get(items[0].url);
+    await manager.previewOnlineWallpaper(items[0], "original");
+    assert(downloads.get(items[0].url) === before + 1, "Original cache did not evict the oldest of four images");
+    assert(await manager.previewOnlineWallpaper(items[0]) === thumbnail, "Original cache polluted the thumbnail cache");
+    assert(await manager.previewOnlineWallpaper({ ...items[0], thumbnail: undefined }) === original, "Missing thumbnail reused low-resolution cached bytes");
+    assert(temporaryImages.size === 0, "Large-image temporary data was not released");
+    if (retrySearch) {
+      failAllSearches = true;
+      document.querySelector('.ms-gallery-search-form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await waitFor(() => document.querySelector('[role="status"]')?.textContent.includes("自动重试"), "retry before unmount");
+      const callsBeforeUnmount = searchCalls;
+      root.unmount();
+      await new Promise(resolve => setTimeout(resolve, 1100));
+      assert(searchCalls === callsBeforeUnmount, "Unmounted gallery kept retrying searches");
+    } else root.unmount();
+    manager.dispose(); restoreTimers();
+    document.querySelector("#result").textContent = "PASS: thumbnails only on gallery load; original URL and pixels; failure/retry; original-byte save reuse; closed-preview isolation; bounded cache; missing-thumbnail fallback; preview remains loading after 90 simulated seconds" + (largeOriginal ? "; 13 MiB original preview and save" : "") + (retrySearch ? "; search auto-retry status, recovery and cancellation" : "");
+    document.title = "PASS";
+  } catch (error) {
+    const details = JSON.stringify({ downloads: [...downloads], preview: document.querySelector(".ms-gallery-preview-loading")?.textContent });
+    secondLoad.resolve(); root.unmount(); manager.dispose(); restoreTimers();
+    document.querySelector("#result").textContent = `${error.stack}\n${details}`; document.title = "FAIL";
+  }
+</script>
+</html>

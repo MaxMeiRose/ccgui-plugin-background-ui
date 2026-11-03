@@ -1,5 +1,10 @@
 import type { PluginContext } from "./ccgui-plugin";
-import { detectBackgroundMime } from "./background-import-core.ts";
+import { detectBackgroundMime, MAX_BACKGROUND_BYTES } from "./background-import-core.ts";
+import {
+  WALLPAPER_DOWNLOAD_TIMEOUT_MS, WALLPAPER_EXEC_TIMEOUT_MS,
+  WallpaperSearchError, wallpaperNetworkError, isRetryableWallpaperStatus, retryWallpaperSearch,
+  type WallpaperSearchOptions,
+} from "./wallpaper-network.ts";
 
 export type WallpaperQuery = { category: string; keyword: string; resolution: string; sort?: string; seed?: string };
 export type OnlineWallpaper = {
@@ -44,7 +49,9 @@ const IMAGE_HOSTS: readonly string[] = [
 ];
 export const WALLPAPER_NETWORK_HOSTS: readonly string[] = ["wp.upx8.com", ...IMAGE_HOSTS];
 
-const MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024;
+const MAX_DOWNLOAD_BYTES = MAX_BACKGROUND_BYTES;
+const DOWNLOAD_LIMIT_MESSAGE = `壁纸原图超过 ${MAX_DOWNLOAD_BYTES / (1024 * 1024)} MiB 下载上限`;
+const DOWNLOAD_TIMEOUT_MESSAGE = `壁纸下载超时（已等待 ${WALLPAPER_DOWNLOAD_TIMEOUT_MS / 1000} 秒），请稍后重试`;
 const MAX_BASE64_LENGTH = Math.ceil(MAX_DOWNLOAD_BYTES / 3) * 4;
 const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const NODE_SLICE_BYTES = 45_000; // multiple of 3 keeps base64 slices alignable; output stays under the 64 KiB exec cap
@@ -155,7 +162,7 @@ function decodeImageBody(body: string): Uint8Array {
   if (compact.endsWith("==")) padding = 2;
   else if (compact.endsWith("=")) padding = 1;
   const decodedLength = compact.length / 4 * 3 - padding;
-  if (decodedLength <= 0 || decodedLength > MAX_DOWNLOAD_BYTES) throw new Error("壁纸原图超过 8 MiB 下载上限，请选择其他图片");
+  if (decodedLength <= 0 || decodedLength > MAX_DOWNLOAD_BYTES) throw new Error(`${DOWNLOAD_LIMIT_MESSAGE}，请选择其他图片`);
   const finalSextet = BASE64_ALPHABET.indexOf(compact[compact.length - padding - 1]);
   if ((padding === 2 && (finalSextet & 15) !== 0) || (padding === 1 && (finalSextet & 3) !== 0)) throw invalid();
   let binary: string;
@@ -170,6 +177,7 @@ export class WallpaperApi {
   private readonly bridge: PluginContext["bridge"];
   private disposed = false;
   private cooldownUntil = 0;
+  private readonly searchLifetime = new AbortController();
 
   constructor(bridge: PluginContext["bridge"]) {
     this.bridge = bridge;
@@ -186,11 +194,11 @@ export class WallpaperApi {
       this.cooldownUntil = Date.now() + 60_000;
       throw new Error(`壁纸请求过于频繁，请在 60 秒后重试${suffix}`);
     }
-    if (status === 503) throw new Error(`壁纸服务暂时不可用（503），请稍后重试${suffix}`);
-    if (status < 200 || status >= 300) throw new Error(`壁纸请求失败（HTTP ${status}）${suffix}`);
+    if (status === 503) throw new WallpaperSearchError(`壁纸服务暂时不可用（503），请稍后重试${suffix}`, true);
+    if (status < 200 || status >= 300) throw new WallpaperSearchError(`壁纸请求失败（HTTP ${status}）${suffix}`, isRetryableWallpaperStatus(status));
   }
 
-  private async request(args: Record<string, unknown>, allowRetry = false): Promise<HttpResponse> {
+  private async request(args: Record<string, unknown>): Promise<HttpResponse> {
     this.assertActive();
     const remaining = Math.ceil((this.cooldownUntil - Date.now()) / 1000);
     if (remaining > 0) throw new Error(`壁纸请求过于频繁，请在 ${remaining} 秒后重试`);
@@ -199,25 +207,26 @@ export class WallpaperApi {
       response = await this.bridge.invoke<unknown>("plugin_http_request", args);
     } catch (error) {
       this.assertActive();
-      let detail = "请稍后重试";
-      if (error instanceof Error) detail = error.message;
-      else if (typeof error === "string") detail = error;
-      throw new Error(`壁纸网络请求失败：${detail}`);
+      throw wallpaperNetworkError(error);
     }
     this.assertActive();
     if (!isRecord(response) || typeof response.status !== "number" || !Number.isInteger(response.status) ||
       response.status < 100 || response.status > 599) throw new Error("壁纸服务响应格式无效，请稍后重试");
-    if (response.status === 500 && allowRetry) return this.request(args, false);
     const body = typeof response.body === "string" ? response.body : "";
     this.checkStatus(response.status, body);
     if (typeof response.body !== "string") throw new Error("壁纸服务响应数据无效，请稍后重试");
     return response as HttpResponse;
   }
 
-  async search(query: WallpaperQuery): Promise<OnlineWallpaper[]> {
+  async search(query: WallpaperQuery, options: WallpaperSearchOptions = {}): Promise<OnlineWallpaper[]> {
+    const signal = options.signal ? AbortSignal.any([options.signal, this.searchLifetime.signal]) : this.searchLifetime.signal;
+    return retryWallpaperSearch(() => this.searchOnce(query), { ...options, signal });
+  }
+
+  private async searchOnce(query: WallpaperQuery): Promise<OnlineWallpaper[]> {
     this.assertActive();
     const normalized = normalizeWallpaperQuery(query);
-    const response = await this.request({ method: "GET", url: buildWallpaperUrl(normalized) }, true);
+    const response = await this.request({ method: "GET", url: buildWallpaperUrl(normalized) });
     this.assertActive();
     let payload: unknown;
     try {
@@ -241,14 +250,14 @@ export class WallpaperApi {
     return result.image ?? this.downloadViaNode(url, result.size, prelude);
   }
 
-  private async execNode(script: string): Promise<string> {
+  private async execNode(script: string, timeoutMs = 30_000): Promise<string> {
     this.assertActive();
     const { promise: timeout, reject } = Promise.withResolvers<never>();
-    const timer = setTimeout(() => reject(new Error("壁纸读取超时，请重试")), 30_000);
+    const timer = setTimeout(() => reject(new Error("壁纸读取超时，请重试")), timeoutMs + 5_000);
     try {
       const response = await Promise.race([
         this.bridge.invoke<{ code?: number; stdout?: string; stderr?: string }>(
-          "plugin_exec_run", { bin: "node", args: ["-e", script], timeoutMs: 30_000 }),
+          "plugin_exec_run", { bin: "node", args: ["-e", script], timeoutMs }),
         timeout,
       ]);
       this.assertActive();
@@ -264,7 +273,7 @@ export class WallpaperApi {
   }
 
   private fetchOpening(url: string): string {
-    return `(async()=>{const signal=AbortSignal.timeout(25000);let url=${JSON.stringify(url)};let r;for(let i=0;i<=10;i++){const current=authorize(url);r=await fetch(current.href,{redirect:"manual",signal});if(![301,302,303,307,308].includes(r.status))break;const location=r.headers.get("location");if(!location)throw new Error("图片重定向地址无效");const next=new URL(location,current);authorize(next.href);await r.body?.cancel();url=next.href;if(i===10)throw new Error("图片重定向次数过多")}if(!r.ok)throw new Error("HTTP "+r.status);`;
+    return `(async()=>{const signal=AbortSignal.timeout(${WALLPAPER_DOWNLOAD_TIMEOUT_MS});let url=${JSON.stringify(url)};let r;for(let i=0;i<=10;i++){const current=authorize(url);r=await fetch(current.href,{redirect:"manual",signal});if(![301,302,303,307,308].includes(r.status))break;const location=r.headers.get("location");if(!location)throw new Error("图片重定向地址无效");const next=new URL(location,current);authorize(next.href);await r.body?.cancel();url=next.href;if(i===10)throw new Error("图片重定向次数过多")}if(!r.ok)throw new Error("HTTP "+r.status);`;
   }
 
   private finishDownload(bytes: Uint8Array, size: number, url: string): DownloadedImage {
@@ -276,11 +285,11 @@ export class WallpaperApi {
 
   /** Small bodies return inline; large ones are written during the same fetch. */
   private async downloadInline(url: string, hosts: readonly string[], prelude: string): Promise<{ image: DownloadedImage; size: number } | { image: null; size: number }> {
-    const script = `${prelude}${this.scriptPrelude(hosts)}${this.fetchOpening(url)}const declared=Number(r.headers.get("content-length"));if(Number.isFinite(declared)&&declared>${MAX_DOWNLOAD_BYTES})throw new Error("壁纸原图超过 8 MiB 下载上限");const parts=[];let size=0;for await(const part of r.body){size+=part.length;if(size>${MAX_DOWNLOAD_BYTES})throw new Error("壁纸原图超过 8 MiB 下载上限");parts.push(part)}const buf=Buffer.concat(parts,size);if(size>${NODE_SLICE_BYTES}){fs.writeFileSync(p,buf,{flag:"wx"});process.stdout.write("${INLINE_TOO_BIG} "+size);return}process.stdout.write(size+"\\n"+buf.toString("base64"))})().catch(e=>{console.error(String(e&&e.message||e));process.exitCode=1})`;
-    const output = await this.execNode(script);
+    const script = `${prelude}${this.scriptPrelude(hosts)}${this.fetchOpening(url)}const declared=Number(r.headers.get("content-length"));if(Number.isFinite(declared)&&declared>${MAX_DOWNLOAD_BYTES})throw new Error(${JSON.stringify(DOWNLOAD_LIMIT_MESSAGE)});const parts=[];let size=0;for await(const part of r.body){size+=part.length;if(size>${MAX_DOWNLOAD_BYTES})throw new Error(${JSON.stringify(DOWNLOAD_LIMIT_MESSAGE)});parts.push(part)}const buf=Buffer.concat(parts,size);if(size>${NODE_SLICE_BYTES}){fs.writeFileSync(p,buf,{flag:"wx"});process.stdout.write("${INLINE_TOO_BIG} "+size);return}process.stdout.write(size+"\\n"+buf.toString("base64"))})().catch(e=>{console.error(e?.name==="TimeoutError"||e?.name==="AbortError"?${JSON.stringify(DOWNLOAD_TIMEOUT_MESSAGE)}:String(e&&e.message||e));process.exitCode=1})`;
+    const output = await this.execNode(script, WALLPAPER_EXEC_TIMEOUT_MS);
     if (output.startsWith(INLINE_TOO_BIG)) {
       const size = Number(output.slice(INLINE_TOO_BIG.length).trim());
-      if (size > MAX_DOWNLOAD_BYTES) throw new Error("壁纸原图超过 8 MiB 下载上限");
+      if (size > MAX_DOWNLOAD_BYTES) throw new Error(DOWNLOAD_LIMIT_MESSAGE);
       if (!Number.isSafeInteger(size) || size <= NODE_SLICE_BYTES) throw new Error("壁纸下载失败：未取得图片大小，请重试");
       return { image: null, size };
     }
@@ -314,5 +323,6 @@ export class WallpaperApi {
 
   dispose(): void {
     this.disposed = true;
+    this.searchLifetime.abort(new Error("在线图库已关闭，请重新打开后重试"));
   }
 }

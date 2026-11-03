@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createRequire } from "node:module";
+import { runInNewContext } from "node:vm";
 
 import {
   WALLPAPER_API_URL,
@@ -15,7 +17,6 @@ const query = { category: "nature", keyword: "", resolution: "1920x1080" };
 const imageUrl = "http://cdn-hsyq-static.shanhutech.cn/bizhi/staticwp/photo.jpg";
 const imageRow = { url: imageUrl, title: "", source: "birdpaper", width: 0, height: 0, resolution: "1920x1080" };
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jgbkAAAAASUVORK5CYII=", "base64");
-const maxBytes = 8 * 1024 * 1024;
 
 const jsonResponse = data => ({ status: 200, body: JSON.stringify({ code: 200, message: "success", data, count: Array.isArray(data) ? data.length : 1 }) });
 const binaryResponse = (bytes = png, extra = {}) => ({
@@ -186,11 +187,9 @@ test("unapproved URLs cannot enter results or be downloaded directly", async () 
   }
 });
 
-test("HTTP failures surface without automatic retries", async () => {
+test("non-retryable HTTP failures surface directly", async () => {
   for (const [response, message] of [
-    [{ status: 503, body: "service unavailable" }, /暂时|暂不可用|503/],
     [{ status: 404, body: "not found" }, /404/],
-    [new Error("connection timeout"), /timeout|超时|网络/],
   ]) {
     const bridge = bridgeReturning(response);
     await assert.rejects(new WallpaperApi(bridge).search(query), message);
@@ -300,18 +299,136 @@ test("all supported image signatures are accepted and HTML or SVG is rejected", 
 });
 
 
-test("oversized downloads are rejected with the 8 MiB cap message", async () => {
+test("high-resolution originals through 32 MiB download intact with the generated Node scripts", async () => {
+  for (const size of [13 * 1024 * 1024, 32 * 1024 * 1024]) {
+    const body = Buffer.alloc(size, 7);
+    png.copy(body);
+    const bridge = executingNodeBridgeFor(body);
+    try {
+      const result = await new WallpaperApi(bridge).download(imageRow);
+      assert.deepEqual(result.bytes, new Uint8Array(body));
+      assert.equal(result.mime, "image/png");
+      assert.equal(bridge.fetches, 1, "large originals should be fetched once");
+      assert.equal(bridge.temporaryFilesLeft(), 0, "completed downloads must remove their temporary files");
+    } finally { bridge.cleanup(); }
+  }
+});
+
+test("the generated downloader rejects originals over 32 MiB with and without Content-Length", async () => {
+  const body = Buffer.alloc(32 * 1024 * 1024 + 1, 7);
+  png.copy(body);
+  for (const declaredLength of [body.length, null]) {
+    const bridge = executingNodeBridgeFor(body, declaredLength);
+    try {
+      await assert.rejects(new WallpaperApi(bridge).download(imageRow), /超过 32 MiB/);
+      assert.equal(bridge.temporaryFilesLeft(), 0);
+    } finally { bridge.cleanup(); }
+  }
+});
+
+// Execute production download/read scripts with real local file IO and a fixture response.
+function executingNodeBridgeFor(body, declaredLength = body.length, fetchDelayMs = 0) {
+  const require = createRequire(import.meta.url);
+  const fs = require("node:fs");
+  const files = new Set();
+  const timers = new Set();
+  const bridge = {
+    fetches: 0,
+    temporaryFilesLeft: () => [...files].filter(path => fs.existsSync(path)).length,
+    cleanup: () => {
+      for (const timer of timers) clearTimeout(timer);
+      for (const path of files) fs.rmSync(path, { force: true });
+    },
+    invoke: async (command, args) => {
+      assert.equal(command, "plugin_exec_run");
+      assert.equal(args.bin, "node");
+      let stdout = "";
+      let stderr = "";
+      const process = { exitCode: 0, stdout: { write: text => {
+        stdout += text;
+        assert.ok(Buffer.byteLength(stdout) <= 65_536, "exec output must fit the host limit");
+      } } };
+      const execution = runInNewContext(args.args[1], {
+        Buffer, URL, process,
+        AbortSignal: fetchDelayMs ? { timeout: ms => {
+          const controller = new AbortController();
+          timers.add(setTimeout(() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), ms));
+          return controller.signal;
+        } } : AbortSignal,
+        require: name => name === "node:fs" ? { ...fs, writeFileSync: (path, bytes, options) => {
+          files.add(path);
+          fs.writeFileSync(path, bytes, options);
+        } } : require(name),
+        console: { error: message => { stderr += String(message); } },
+        fetch: async (url, { signal }) => {
+          assert.equal(url, imageUrl);
+          bridge.fetches++;
+          if (fetchDelayMs) await new Promise((resolve, reject) => {
+            signal.throwIfAborted();
+            const aborted = () => { clearTimeout(timer); reject(signal.reason); };
+            const timer = setTimeout(() => { signal.removeEventListener("abort", aborted); resolve(); }, fetchDelayMs);
+            timers.add(timer);
+            signal.addEventListener("abort", aborted, { once: true });
+          });
+          return new Response(body, declaredLength === null ? {} : { headers: { "content-length": String(declaredLength) } });
+        },
+      });
+      let hostTimer;
+      try {
+        await Promise.race([execution, new Promise((_, reject) => {
+          hostTimer = setTimeout(() => reject(new Error(`node timed out after ${args.timeoutMs}ms`)), args.timeoutMs);
+        })]);
+      } finally { clearTimeout(hostTimer); }
+      return { code: process.exitCode, stdout, stderr };
+    },
+  };
+  return bridge;
+}
+
+test("a slow original can finish after ninety seconds without network or process timeout", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const bridge = executingNodeBridgeFor(png, png.length, 90_000);
+  try {
+    const work = new WallpaperApi(bridge).download(imageRow).then(value => ({ value }), error => ({ error }));
+    await new Promise(resolve => setImmediate(resolve));
+    t.mock.timers.tick(25_000);
+    await new Promise(resolve => setImmediate(resolve));
+    t.mock.timers.tick(65_000);
+    await new Promise(resolve => setImmediate(resolve));
+    const result = await work;
+    assert.ifError(result.error);
+    assert.deepEqual(result.value.bytes, new Uint8Array(png));
+  } finally { bridge.cleanup(); }
+});
+
+test("a stalled download still times out after three minutes with an actionable message", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const bridge = executingNodeBridgeFor(png, png.length, 240_000);
+  try {
+    let settled = false;
+    const work = new WallpaperApi(bridge).download(imageRow).then(() => null, error => error).finally(() => { settled = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    t.mock.timers.tick(179_999);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false);
+    t.mock.timers.tick(1);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.match(String(await work), /下载超时.*180 秒/);
+  } finally { bridge.cleanup(); }
+});
+
+test("oversized bridge results are rejected with the 32 MiB cap message", async () => {
   const bridge = {
     invoke: async (command, args) => {
       if (command === "plugin_exec_run") {
         const script = args.args[1];
-        if (script.includes("fetch(")) return { code: 0, stdout: `#big ${8 * 1024 * 1024 + 1}`, stderr: "" };
+        if (script.includes("fetch(")) return { code: 0, stdout: `#big ${32 * 1024 * 1024 + 1}`, stderr: "" };
         return { code: 0, stdout: "", stderr: "" };
       }
       throw new Error("unexpected bridge call");
     },
   };
-  await assert.rejects(new WallpaperApi(bridge).download(imageRow), /超过 8 MiB/);
+  await assert.rejects(new WallpaperApi(bridge).download(imageRow), /超过 32 MiB/);
 });
 
 

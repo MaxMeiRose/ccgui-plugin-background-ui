@@ -2,6 +2,7 @@ import type { PluginContext } from "./ccgui-plugin";
 import type { WallpaperQuery } from "./wallpaper-api.ts";
 import { WALLPAPER_CATEGORIES, WALLPAPER_RESOLUTIONS, WallpaperApi } from "./wallpaper-api.ts";
 import type { WallpaperPage, WallpaperProvider } from "./wallpaper-provider";
+import type { WallpaperSearchOptions } from "./wallpaper-network.ts";
 
 /** Legacy sampling source: another batch is not a server-side page. */
 export class Upx8Provider implements WallpaperProvider {
@@ -18,9 +19,9 @@ export class Upx8Provider implements WallpaperProvider {
     this.api = new WallpaperApi(bridge);
   }
 
-  async search(query: WallpaperQuery, page: number): Promise<WallpaperPage> {
+  async search(query: WallpaperQuery, page: number, options: WallpaperSearchOptions = {}): Promise<WallpaperPage> {
     if (page !== 1) throw new Error("随机抽样来源不支持分页，请获取另一批");
-    return { items: await this.api.search(query), page: 1, totalPages: null, totalItems: null };
+    return { items: await this.api.search(query, options), page: 1, totalPages: null, totalItems: null };
   }
 
   dispose(): void {

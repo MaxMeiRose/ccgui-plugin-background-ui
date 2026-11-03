@@ -1,4 +1,5 @@
 import type { PluginContext } from "./ccgui-plugin";
+import type { WallpaperSearchOptions } from "./wallpaper-network.ts";
 import { paletteCss, THEME_PALETTES } from "./theme-palette";
 import { toolTimelineCss } from "./tool-timeline-theme";
 import { customThemeColor, paletteFromColor, isBackgroundImage, createBackgroundThumbnail, readBackgroundBytes } from "./theme-customization";
@@ -318,6 +319,8 @@ export class GuiThemeManager {
   private appliedImage = "";
   private previewCache = new Map<string, string>();
   private previewLoads = new Map<string, Promise<string>>();
+  private originalPreviewCache = new Map<string, string>();
+  private originalPreviewLoads = new Map<string, Promise<string>>();
   private onlineGalleryItems: OnlineWallpaper[] = [];
   private onlineGalleryQuery: WallpaperQuery | null = null;
   private readonly providers: WallpaperProvider[];
@@ -475,8 +478,9 @@ export class GuiThemeManager {
     this.galleryPages.clear();
   }
 
-  public async searchWallpapers(query: WallpaperQuery, page = 1): Promise<WallpaperPage> {
+  public async searchWallpapers(query: WallpaperQuery, page = 1, options: WallpaperSearchOptions = {}): Promise<WallpaperPage> {
     await this.init();
+    options.signal?.throwIfAborted();
     const provider = this.providers.find(item => item.id === this.activeProviderId);
     if (!provider) throw new Error("壁纸来源不可用");
     const changed = !this.onlineGalleryQuery || this.galleryProviderId !== this.activeProviderId ||
@@ -497,7 +501,8 @@ export class GuiThemeManager {
     const requestQuery = page > 1 && !changed && this.onlineGalleryQuery?.seed
       ? { ...query, seed: this.onlineGalleryQuery.seed }
       : query;
-    const result = await provider.search(requestQuery, page);
+    const result = await provider.search(requestQuery, page, options);
+    options.signal?.throwIfAborted();
     const seen = this.hideSeen ? this.seenUrls.asSet() : new Set<string>();
     const hidden = new Set<string>();
     const visible: OnlineWallpaper[] = [];
@@ -537,26 +542,37 @@ export class GuiThemeManager {
     return { ...provider.defaultQuery };
   }
 
-  public previewOnlineWallpaper(item: OnlineWallpaper): Promise<string> {
-    const cached = this.previewCache.get(item.url);
-    if (cached) return Promise.resolve(cached);
-    const pending = this.previewLoads.get(item.url);
+  public previewOnlineWallpaper(item: OnlineWallpaper, quality: "thumbnail" | "original" = "thumbnail"): Promise<string> {
+    const original = quality === "original" || !item.thumbnail;
+    const imageItem = original ? item : { ...item, url: item.thumbnail! };
+    const key = imageItem.url;
+    const cache = original ? this.originalPreviewCache : this.previewCache;
+    const loads = original ? this.originalPreviewLoads : this.previewLoads;
+    const limit = original ? 3 : 48;
+    const cached = cache.get(key);
+    if (cached) {
+      cache.delete(key);
+      cache.set(key, cached);
+      return Promise.resolve(cached);
+    }
+    const pending = loads.get(key);
     if (pending) return pending;
-    const load = this.loadOnlineWallpaper(item.thumbnail ? { ...item, url: item.thumbnail } : item).then(image => {
-      if (this.previewCache.size >= 48 && !this.previewCache.has(item.url)) {
-        const oldest = this.previewCache.keys().next().value;
-        if (oldest) this.previewCache.delete(oldest);
+    const load = this.loadOnlineWallpaper(imageItem).then(image => {
+      if (loads.get(key) !== load) return image;
+      if (cache.size >= limit && !cache.has(key)) {
+        const oldest = cache.keys().next().value;
+        if (oldest) cache.delete(oldest);
       }
-      this.previewCache.set(item.url, image);
+      cache.set(key, image);
       return image;
-    }).finally(() => { this.previewLoads.delete(item.url); });
-    this.previewLoads.set(item.url, load);
+    }).finally(() => { if (loads.get(key) === load) loads.delete(key); });
+    loads.set(key, load);
     return load;
   }
 
   public async saveOnlineWallpaper(item: OnlineWallpaper, apply: boolean): Promise<BackgroundHistoryItem> {
     await this.init();
-    const image = await this.loadOnlineWallpaper(item);
+    const image = await this.previewOnlineWallpaper(item, "original");
     const source: BackgroundImageSource = {
       provider: item.source === "wallhaven" ? "wallhaven" : "wallpaper-api-v2",
       url: item.url,
@@ -622,6 +638,8 @@ export class GuiThemeManager {
     for (const provider of this.providers) provider.dispose();
     this.previewLoads.clear();
     this.previewCache.clear();
+    this.originalPreviewLoads.clear();
+    this.originalPreviewCache.clear();
     this.backgroundHistory.dispose();
     this.imageDisposer?.();
     this.imageDisposer = null;

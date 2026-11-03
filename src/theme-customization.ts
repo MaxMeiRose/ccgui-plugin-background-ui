@@ -1,5 +1,5 @@
 import { THEME_PALETTES, type Colors } from "./theme-palette";
-import { MAX_BACKGROUND_BYTES, detectBackgroundMime } from "./background-import-core";
+import { MAX_BACKGROUND_BYTES, BACKGROUND_SIZE_LIMIT_MESSAGE, detectBackgroundMime } from "./background-import-core";
 
 export {
   MAX_BACKGROUND_BYTES,
@@ -46,7 +46,7 @@ async function assertBackgroundPixels(data: string): Promise<void> {
 }
 
 export async function readBackgroundFile(file: File): Promise<string> {
-  if (file.size > MAX_BACKGROUND_BYTES) throw new Error("图片不能超过 12 MB");
+  if (file.size > MAX_BACKGROUND_BYTES) throw new Error(BACKGROUND_SIZE_LIMIT_MESSAGE);
   if (!file.size) throw new Error("图片文件为空");
   const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer());
   const mime = detectBackgroundMime(bytes);
@@ -63,7 +63,7 @@ export async function readBackgroundFile(file: File): Promise<string> {
 }
 
 export async function readBackgroundBytes(bytes: Uint8Array, mime: string): Promise<string> {
-  if (bytes.byteLength > MAX_BACKGROUND_BYTES) throw new Error("图片不能超过 12 MB");
+  if (bytes.byteLength > MAX_BACKGROUND_BYTES) throw new Error(BACKGROUND_SIZE_LIMIT_MESSAGE);
   if (!bytes.byteLength) throw new Error("图片文件为空");
   if (detectBackgroundMime(bytes) !== mime) throw new Error("请选择 PNG、JPEG、WebP 或 GIF 图片");
   let binary = "";
